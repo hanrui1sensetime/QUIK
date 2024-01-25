@@ -15,13 +15,16 @@ torch::Tensor quantizeOld(const torch::Tensor &src, const torch::Tensor &meta,
 
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> quantize(
     const torch::Tensor &src, const torch::Tensor &int_indices,
-    const torch::Tensor &fp_indices, int bits) {
+    const torch::Tensor &fp_indices, torch::Tensor &meta_new, int bits,
+    bool static_quant = false) {
   torch::checkContiguous("quantize", {{src, "src", 0}});
   TORCH_CHECK(bits == 4 or bits == 8, "bits argument must be either 4 or 8");
   torch::checkDeviceType("quantize", {src}, at::DeviceType::CUDA);
   torch::checkDeviceType("quantize", {int_indices}, at::DeviceType::CUDA);
   torch::checkDeviceType("quantize", {fp_indices}, at::DeviceType::CUDA);
-  return quantizeCUDA(src, int_indices, fp_indices, bits);
+  torch::checkDeviceType("quantize", {meta_new}, at::DeviceType::CUDA);
+  return quantizeCUDA(src, int_indices, fp_indices, meta_new, bits,
+                      static_quant = static_quant);
 }
 
 torch::Tensor dequantize(const torch::Tensor &x, const torch::Tensor &meta,
@@ -156,7 +159,7 @@ void buildSubmodule(py::module &mod) {
       "meta.scale - 2^{bits - 1}))",
       "meta: M * [scale, zero]", "meta: full precision features",
       py::arg("src"), py::arg("int_indices"), py::arg("fp_indices"),
-      py::arg("bits"));
+      py::arg("meta_new"), py::arg("bits"), py::arg("quant_static") = false);
 
   m.def("dequantize", &dequantize,
         "input (x: torch.Tensor(M x N, INT32),\n"

@@ -7,7 +7,8 @@ torch::Tensor quantizeCUDAOld(const torch::Tensor &src,
 
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> quantizeCUDA(
     const torch::Tensor &src, const torch::Tensor &int_indices,
-    const torch::Tensor &fp_indices, const int bits);
+    const torch::Tensor &fp_indices, torch::Tensor &meta_new, const int bits,
+    const bool static_quant);
 
 torch::Tensor dequantizeCUDA(const torch::Tensor &x, const torch::Tensor &meta,
                              const torch::Tensor &scaleCol,

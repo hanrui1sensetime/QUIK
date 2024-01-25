@@ -450,7 +450,8 @@ __global__ void quantizeCUDAKernel(T *dst, K *meta, K *fp_x, const K *src,
                                    const long *int_indices,
                                    const long *fp_indices, const unsigned rows,
                                    const unsigned cols, const unsigned num_int,
-                                   const unsigned num_fp) {
+                                   const unsigned num_fp,
+                                   bool static_quant = false) {
   unsigned num_blocks = gridDim.x;
   const unsigned bid = blockIdx.x;
   const unsigned bucket_size = cols;
@@ -463,10 +464,13 @@ __global__ void quantizeCUDAKernel(T *dst, K *meta, K *fp_x, const K *src,
        bucket_id += num_blocks) {
     //      cur_bucket_size = umin(bucket_size, num_elems - bucket_id *
     //      bucket_size);
+    if (!static_quant) {
+      // Find zero, scale for the values to quantize in int_indices positions
+      FindMetaParallelIndexed(src + bucket_size * bucket_id,
+                              meta + 2 * bucket_id, int_indices, num_int,
+                              (1 << BITS) - 1);
+    }
 
-    // Find zero, scale for the values to quantize in int_indices positions
-    FindMetaParallelIndexed(src + bucket_size * bucket_id, meta + 2 * bucket_id,
-                            int_indices, num_int, (1 << BITS) - 1);
     __syncthreads();
 
     // Quantize values in int_indices positions
@@ -491,7 +495,8 @@ __global__ void quantizeCUDAKernel(T *dst, K *meta, K *fp_x, const K *src,
 
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> quantizeCUDA(
     const torch::Tensor &src, const torch::Tensor &int_indices,
-    const torch::Tensor &fp_indices, int bits) {
+    const torch::Tensor &fp_indices, torch::Tensor &meta_new, int bits,
+    bool static_quant = false) {
   const at::cuda::CUDAGuard device_guard(src.device());
 
   if (NUM_STRIDES_PER_THREAD_QUANTIZE == 0) {
@@ -522,8 +527,14 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> quantizeCUDA(
   TORCH_CHECK(
       num_int % 2 == 0,
       "Quantize: number of int columns has to be even (implementation detail)");
+  if (meta_new.numel() == 0) {
+    meta_new = torch::empty({2 * rows},
+                            torch::dtype(src.dtype()).device(src.device()));
+  }
+  /*
   auto meta =
       torch::empty({2 * rows}, torch::dtype(src.dtype()).device(src.device()));
+  */
   auto fp_x = torch::empty({rows, num_fp},
                            torch::dtype(src.dtype()).device(src.device()));
   int shared_memory_block_size = 2 * num_threads * src.element_size();
@@ -537,20 +548,20 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> quantizeCUDA(
               .device(src.device()));
       quantizeCUDAKernel<Int4Storage, torch::Half, 4>
           <<<num_blocks, num_threads, shared_memory_block_size>>>(
-              dst.data_ptr<Int4Storage>(), meta.data_ptr<torch::Half>(),
+              dst.data_ptr<Int4Storage>(), meta_new.data_ptr<torch::Half>(),
               fp_x.data_ptr<torch::Half>(), src.data_ptr<torch::Half>(),
               int_indices.data_ptr<long>(), fp_indices.data_ptr<long>(), rows,
-              cols, num_int, num_fp);
+              cols, num_int, num_fp, static_quant = static_quant);
     } else {
       dst = torch::empty({rows, num_int},
                          torch::dtype(util::TorchDtypeDispatcher<int8_t>::value)
                              .device(src.device()));
       quantizeCUDAKernel<int8_t, torch::Half, 8>
           <<<num_blocks, num_threads, shared_memory_block_size>>>(
-              dst.data_ptr<int8_t>(), meta.data_ptr<torch::Half>(),
+              dst.data_ptr<int8_t>(), meta_new.data_ptr<torch::Half>(),
               fp_x.data_ptr<torch::Half>(), src.data_ptr<torch::Half>(),
               int_indices.data_ptr<long>(), fp_indices.data_ptr<long>(), rows,
-              cols, num_int, num_fp);
+              cols, num_int, num_fp, static_quant = static_quant);
     }
   } else if (src.dtype() == torch::kBFloat16) {
     //    printf("Process bfloat16\n");
@@ -561,26 +572,26 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> quantizeCUDA(
               .device(src.device()));
       quantizeCUDAKernel<Int4Storage, torch::BFloat16, 4>
           <<<num_blocks, num_threads, shared_memory_block_size>>>(
-              dst.data_ptr<Int4Storage>(), meta.data_ptr<torch::BFloat16>(),
+              dst.data_ptr<Int4Storage>(), meta_new.data_ptr<torch::BFloat16>(),
               fp_x.data_ptr<torch::BFloat16>(), src.data_ptr<torch::BFloat16>(),
               int_indices.data_ptr<long>(), fp_indices.data_ptr<long>(), rows,
-              cols, num_int, num_fp);
+              cols, num_int, num_fp, static_quant = static_quant);
     } else {
       dst = torch::empty({rows, num_int},
                          torch::dtype(util::TorchDtypeDispatcher<int8_t>::value)
                              .device(src.device()));
       quantizeCUDAKernel<int8_t, torch::BFloat16, 8>
           <<<num_blocks, num_threads, shared_memory_block_size>>>(
-              dst.data_ptr<int8_t>(), meta.data_ptr<torch::BFloat16>(),
+              dst.data_ptr<int8_t>(), meta_new.data_ptr<torch::BFloat16>(),
               fp_x.data_ptr<torch::BFloat16>(), src.data_ptr<torch::BFloat16>(),
               int_indices.data_ptr<long>(), fp_indices.data_ptr<long>(), rows,
-              cols, num_int, num_fp);
+              cols, num_int, num_fp, static_quant = static_quant);
     }
   }
   auto status = cudaGetLastError();
   TORCH_CHECK(status == cudaSuccess,
               "Failed quantize: " + std::string(cudaGetErrorString(status)));
-  return {dst, meta, fp_x};
+  return {dst, meta_new, fp_x};
 }
 
 }  // namespace QUIK::asymmetric
