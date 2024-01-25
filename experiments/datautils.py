@@ -4,6 +4,7 @@ import random
 import datasets
 import transformers
 
+
 def set_seed(seed):
     np.random.seed(seed)
     torch.random.manual_seed(seed)
@@ -11,14 +12,20 @@ def set_seed(seed):
 
 
 def get_wikitext2(nsamples, seed, seqlen, model, hf_token):
-    traindata = datasets.load_dataset('wikitext', 'wikitext-2-raw-v1', split='train')
-    testdata = datasets.load_dataset('wikitext', 'wikitext-2-raw-v1', split='test')
+    traindata = datasets.load_dataset('wikitext',
+                                      'wikitext-2-raw-v1',
+                                      split='train')
+    testdata = datasets.load_dataset('wikitext',
+                                     'wikitext-2-raw-v1',
+                                     split='test')
 
     if hf_token is None:
-        tokenizer = transformers.AutoTokenizer.from_pretrained(model, use_fast=False)
+        tokenizer = transformers.AutoTokenizer.from_pretrained(model,
+                                                               use_fast=False)
     else:
-        tokenizer = transformers.AutoTokenizer.from_pretrained(model, use_fast=False, use_auth_token=hf_token)
-        
+        tokenizer = transformers.AutoTokenizer.from_pretrained(
+            model, use_fast=False, use_auth_token=hf_token)
+
     trainenc = tokenizer("\n\n".join(traindata['text']), return_tensors='pt')
     testenc = tokenizer("\n\n".join(testdata['text']), return_tensors='pt')
 
@@ -33,16 +40,24 @@ def get_wikitext2(nsamples, seed, seqlen, model, hf_token):
         trainloader.append((inp, tar))
     return trainloader, testenc
 
+
 def get_ptb(nsamples, seed, seqlen, model, hf_token):
-    traindata = datasets.load_dataset('ptb_text_only', 'penn_treebank', split='train')
-    valdata = datasets.load_dataset('ptb_text_only', 'penn_treebank', split='validation')
+    traindata = datasets.load_dataset('ptb_text_only',
+                                      'penn_treebank',
+                                      split='train')
+    valdata = datasets.load_dataset('ptb_text_only',
+                                    'penn_treebank',
+                                    split='validation')
 
     if hf_token is None:
-        tokenizer = transformers.AutoTokenizer.from_pretrained(model, use_fast=False)
+        tokenizer = transformers.AutoTokenizer.from_pretrained(model,
+                                                               use_fast=False)
     else:
-        tokenizer = transformers.AutoTokenizer.from_pretrained(model, use_fast=False, use_auth_token=hf_token)
-       
-    trainenc = tokenizer("\n\n".join(traindata['sentence']), return_tensors='pt')
+        tokenizer = transformers.AutoTokenizer.from_pretrained(
+            model, use_fast=False, use_auth_token=hf_token)
+
+    trainenc = tokenizer("\n\n".join(traindata['sentence']),
+                         return_tensors='pt')
     testenc = tokenizer("\n\n".join(valdata['sentence']), return_tensors='pt')
 
     random.seed(seed)
@@ -56,24 +71,33 @@ def get_ptb(nsamples, seed, seqlen, model, hf_token):
         trainloader.append((inp, tar))
     return trainloader, testenc
 
-def get_c4(nsamples, seed, seqlen, model, synthetic_data=False, hf_token=None):    
-    
+
+def get_c4(nsamples, seed, seqlen, model, synthetic_data=False, hf_token=None):
+
     if not synthetic_data:
         print('Loading C4 Real dataset')
         traindata = datasets.load_dataset(
-            'allenai/c4', 'allenai--c4', data_files={'train': 'en/c4-train.00000-of-01024.json.gz'}, split='train'
-        )
+            'allenai/c4',
+            'allenai--c4',
+            data_files={'train': 'en/c4-train.00000-of-01024.json.gz'},
+            split='train')
         valdata = datasets.load_dataset(
-            'allenai/c4', 'allenai--c4', data_files={'validation': 'en/c4-validation.00000-of-00008.json.gz'}, split='validation'
-        )
+            'allenai/c4',
+            'allenai--c4',
+            data_files={
+                'validation': 'en/c4-validation.00000-of-00008.json.gz'
+            },
+            split='validation')
     else:
         print('Loading C4 Synthetic dataset')
-    
+
     if hf_token is None:
-        tokenizer = transformers.AutoTokenizer.from_pretrained(model, use_fast=False)
+        tokenizer = transformers.AutoTokenizer.from_pretrained(model,
+                                                               use_fast=False)
     else:
-        tokenizer = transformers.AutoTokenizer.from_pretrained(model, use_fast=False, use_auth_token=hf_token)
-       
+        tokenizer = transformers.AutoTokenizer.from_pretrained(
+            model, use_fast=False, use_auth_token=hf_token)
+
     random.seed(seed)
     trainloader = []
     for _ in range(nsamples):
@@ -108,17 +132,58 @@ def get_c4(nsamples, seed, seqlen, model, synthetic_data=False, hf_token=None):
         valenc = torch.hstack(valenc)
     else:
         valenc = torch.randperm(524288).unsqueeze(0).to(torch.long)
+
     class TokenizerWrapper:
+
         def __init__(self, input_ids):
             self.input_ids = input_ids
+
     valenc = TokenizerWrapper(valenc)
 
-    return trainloader, valenc 
+    return trainloader, valenc
 
 
-def get_loaders(
-    name, nsamples=128, seed=0, seqlen=2048, model='', synthetic_data=False, hf_token=None
-):
+def get_custom(nsamples, seed, seqlen, model, calib_file=None):
+    # Warn: this calib uses gptq calib, only for short calib. Long calib should be changed the code, refer to awq
+    import json_lines
+    import os.path
+
+    with open(os.path.join(model, calib_file), 'r') as f:
+        data = []
+        for item in json_lines.reader(f):
+            # if len(item['input_ids']) > seqlen:
+            # print(len(item['input_ids']))
+            # input_ids = torch.tensor(item['input_ids'][:seqlen], dtype=torch.long).unsqueeze(0).contiguous()
+            # labels = torch.tensor(item['labels'][1:seqlen + 1], dtype=torch.long).unsqueeze(0).contiguous()
+            input_ids = torch.tensor(item['input_ids'],
+                                     dtype=torch.long).contiguous()
+            data.append(input_ids)
+            '''
+            if len(data) >= nsamples:
+                break
+            '''
+        data = torch.cat(data, dim=0)
+        data = data[:nsamples * seqlen]
+        data = data.reshape(-1, seqlen)
+        assert data.shape[
+            0] == nsamples, 'need nsamples, this data is not enough'
+
+    return data, data
+
+
+def get_loaders(name,
+                nsamples=128,
+                seed=0,
+                seqlen=2048,
+                model='',
+                synthetic_data=False,
+                hf_token=None):
+    if 'custom' in name:
+        return get_custom(nsamples,
+                          seed,
+                          seqlen,
+                          model,
+                          calib_file='tigerbot-13b-v9-gpt4.jsonl')
     if 'wikitext2' in name:
         return get_wikitext2(nsamples, seed, seqlen, model, hf_token)
     if 'ptb' in name:

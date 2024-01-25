@@ -17,10 +17,10 @@ def symmetric_quantize(x, scale, bits):
 
 class WeightQuantizer(torch.nn.Module):
     '''
-        A class for quantizing the weights. 
+        A class for quantizing the weights.
         We support both symmetric and asymmetric quantization for both perchannel and pertensor.
     '''
-    
+
     def __init__(self, shape=1):
         super(WeightQuantizer, self).__init__()
         self.register_buffer('maxq', torch.tensor(0))
@@ -76,7 +76,7 @@ class WeightQuantizer(torch.nn.Module):
         xmin[tmp] = -1
         xmax[tmp] = +1
 
-        
+
         if self.sym:
             self.scale = xmax / self.maxq
             self.zero = torch.zeros_like(self.scale)
@@ -87,7 +87,7 @@ class WeightQuantizer(torch.nn.Module):
         if self.mse:
             best = torch.full([x.shape[0]], float('inf'), device=dev)
             for i in range(int(self.maxshrink * self.grid)):
-                p = 1 - i / self.grid 
+                p = 1 - i / self.grid
                 xmax1 = p * xmax
                 xmin1 = p * xmin
 
@@ -96,10 +96,10 @@ class WeightQuantizer(torch.nn.Module):
                     zero1 = torch.zeros_like(scale1)
                     q = symmetric_quantize(x, scale1.unsqueeze(1), self.bits)
                 else:
-                    
+
                     scale1 = (xmax1 - xmin1) / self.maxq
                     zero1 = torch.round(-xmin1 / scale1)
-                    q = asymmetric_quantize(x, scale1.unsqueeze(1), zero1.unsqueeze(1), self.maxq)           
+                    q = asymmetric_quantize(x, scale1.unsqueeze(1), zero1.unsqueeze(1), self.maxq)
                 q -= x
                 q.abs_()
                 q.pow_(self.norm)
@@ -109,7 +109,7 @@ class WeightQuantizer(torch.nn.Module):
                     best[tmp] = err[tmp]
                     self.scale[tmp] = scale1[tmp]
                     self.zero[tmp] = zero1[tmp]
-            
+
         if not self.perchannel:
             tmp = shape[0]
             self.scale = self.scale.repeat(tmp)
@@ -128,7 +128,7 @@ class WeightQuantizer(torch.nn.Module):
     def quantize(self, x):
         if self.bits == 16:
             return x
-        
+
         if self.ready():
             if self.sym:
                 return symmetric_quantize(x, self.scale, self.bits)
@@ -142,7 +142,7 @@ class WeightQuantizer(torch.nn.Module):
         return torch.all(self.scale != 0)
 
 class ActQuantizer(torch.nn.Module):
-    
+
     '''
         A class for quantizing the activations. We only support the asymmetric/pertoken quantization
         for the activations.
@@ -157,10 +157,10 @@ class ActQuantizer(torch.nn.Module):
         self.configured = False
 
     def forward(self, x):
-        return asymmetric_quantize(x, self.scale, self.zero, self.maxq)  
+        return asymmetric_quantize(x, self.scale, self.zero, self.maxq)
 
-    def configure(self, bits):    
-        self.maxq = torch.tensor(2 ** bits - 1)          
+    def configure(self, bits):
+        self.maxq = torch.tensor(2 ** bits - 1)
         self.bits = bits
         self.configured = True
 
@@ -169,12 +169,12 @@ class ActQuantizer(torch.nn.Module):
         self.maxq = self.maxq.to(dev)
 
         init_shape = x.shape
-        
+
         if len(init_shape) == 3:
                 assert init_shape[0] == 1, 'Only batch size of 1 is supported!'
-        
+
         reshaped_x = x.reshape((-1, x.shape[-1]))
-             
+
         tmp = torch.zeros(reshaped_x.shape[0], device=dev)
         xmin = torch.minimum(reshaped_x.min(1)[0], tmp)
         xmax = torch.maximum(reshaped_x.max(1)[0], tmp)
@@ -183,12 +183,13 @@ class ActQuantizer(torch.nn.Module):
         xmax[tmp] = +1
         self.scale = (xmax - xmin) / self.maxq
         self.zero = torch.round(-xmin / self.scale)
-                
+
         self.scale = self.scale.unsqueeze(1).repeat(1, reshaped_x.shape[-1]).reshape(init_shape)
         self.zero = self.zero.unsqueeze(1).repeat(1, reshaped_x.shape[-1]).reshape(init_shape)
+        del tmp, xmin, xmax  # to avoid gpu memory leak
 
-            
-        
+
+
 
 class ActQuantWrapper(torch.nn.Module):
     '''
@@ -200,16 +201,16 @@ class ActQuantWrapper(torch.nn.Module):
     def __init__(self, module):
         super(ActQuantWrapper, self).__init__()
         self.module = module
-        self.quantizer = ActQuantizer() 
+        self.quantizer = ActQuantizer()
         self.fp_features_num = 0
         self.act_scales = None
-    
+
     def extra_repr(self) -> str:
          str_ = f'Act. Bits: {self.quantizer.bits}, FP features: {self.fp_features_num}'
          return str_
 
     def fp_features_configure(self, scales, fp_features):
-        
+
         '''
             This function extract the indices of the features that will be quantized a
             nd the ones that will be kept in FP16.
@@ -226,17 +227,17 @@ class ActQuantWrapper(torch.nn.Module):
 
     def forward(self, x):
         x_dtype = x.dtype
-        
+
         if self.quantizer.bits == 16:
             return self.module(x).to(x_dtype)
-        
+
         if self.fp_features_num == 0: #corner case: Quantize all features
             self.quantizer.find_params(x)
             x = self.quantizer(x).to(x_dtype)
             return self.module(x).to(x_dtype)
-        
+
         mixed_precition_x = torch.zeros_like(x)
-        
+
         if len(x.shape) == 3:
             q_features = x[:, :, self.quantized_feature_idx]
             fp_features = x[:, :, self.fp_feature_idx]
@@ -246,14 +247,19 @@ class ActQuantWrapper(torch.nn.Module):
 
         self.quantizer.find_params(q_features)
         q_features = self.quantizer(q_features).to(x_dtype)
-        
+
         if len(x.shape) == 3:
             mixed_precition_x[:, :, self.quantized_feature_idx] = q_features
             mixed_precition_x[:, :, self.fp_feature_idx] = fp_features
         elif len(x.shape) == 2:
             mixed_precition_x[:, self.quantized_feature_idx] = q_features
             mixed_precition_x[:, self.fp_feature_idx] = fp_features
-        return self.module(mixed_precition_x).to(x_dtype)
+        result = self.module(mixed_precition_x).to(x_dtype)
+        del q_features  # To avoid gpu mem leak
+        del fp_features
+        del mixed_precition_x
+        return result
+
 
 def add_actquant(module, name='', layers=[torch.nn.Linear, ActQuantWrapper]):
     if isinstance(module, ActQuantWrapper):
@@ -280,4 +286,3 @@ def add_actquant(module, name='', layers=[torch.nn.Linear, ActQuantWrapper]):
             setattr(module, attr, torch.nn.ModuleList(replaced))
     for name1, child in module.named_children():
         add_actquant(child, name + '.' + name1 if name != '' else name1, layers)
-    

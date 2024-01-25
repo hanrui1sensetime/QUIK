@@ -1,4 +1,4 @@
-flash_attn==2.3.1
+flash_attn==2.3.1.post1
 torch==1.13.1+cu117
 transformers==4.34.0
 wandb
